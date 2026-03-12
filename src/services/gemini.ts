@@ -102,7 +102,7 @@ export async function generateUI(
   try {
     if (provider === 'ollama') {
       const baseUrl = apiKeys.ollamaUrl || 'http://localhost:11434';
-      const response = await fetch(`${baseUrl}/api/chat`, {
+      const response = await fetch(`${baseUrl}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -116,6 +116,7 @@ export async function generateUI(
         })
       });
       if (!response.ok) throw new Error(`Ollama API error: ${response.statusText}`);
+      console.log("ollama working")
       const data = await response.json();
       text = data.message?.content || '{}';
     } else if (provider === 'openai') {
