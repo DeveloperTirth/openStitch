@@ -1,0 +1,5 @@
+{
+  "name": "openStitch",
+  "description": "An AI-powered UI generator that creates React components with Tailwind CSS.",
+  "requestFramePermissions": []
+}
