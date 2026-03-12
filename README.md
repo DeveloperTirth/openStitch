@@ -1,4 +1,4 @@
-# openStitch 🧵
+# openStitch
 
 **Build something | openStitch**
 
