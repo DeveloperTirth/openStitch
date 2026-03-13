@@ -8,6 +8,7 @@ import tw from 'twrnc';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { Highlight, themes } from 'prism-react-renderer';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const scope = { 
   React, 
@@ -26,11 +27,13 @@ const scope = {
 type Message = {
   role: 'user' | 'assistant';
   content: string;
+  targetElement?: string | null;
 };
 
 const PROVIDER_MODELS: Record<AIProvider, {id: string, name: string}[]> = {
   gemini: [
     { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro' },
+    { id: 'gemini-3.1-flash-preview', name: 'Gemini 3.1 Flash' },
     { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' }
   ],
   openai: [
@@ -55,6 +58,15 @@ export interface Project {
   updatedAt: number;
 }
 
+/**
+ * Main Editor component for generating and editing React Native UI.
+ * Handles chat interface, code generation, and live preview rendering.
+ * 
+ * @param props - Component properties
+ * @param props.projectId - The unique identifier for the current project
+ * @param props.onBack - Callback function to return to the project list
+ * @param props.initialPrompt - Optional initial prompt to start generation immediately
+ */
 function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBack: () => void, initialPrompt?: string }) {
   const [messages, setMessages] = useState<Message[]>(() => {
     const saved = localStorage.getItem(`stitch_${projectId}_messages`);
@@ -85,6 +97,7 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
   });
 
   const [isInspectMode, setIsInspectMode] = useState(false);
+  const [selectedElementForEdit, setSelectedElementForEdit] = useState<string | null>(null);
   const [targetScreenIndex, setTargetScreenIndex] = useState<number | null>(null);
   const [replaceCurrent, setReplaceCurrent] = useState(true);
   const [toastError, setToastError] = useState<string | null>(null);
@@ -150,6 +163,17 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
     }
   }, [initialPrompt]);
 
+  const hoveredElementRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!isInspectMode && hoveredElementRef.current) {
+      hoveredElementRef.current.style.outline = '';
+      hoveredElementRef.current.style.outlineOffset = '';
+      hoveredElementRef.current.style.cursor = '';
+      hoveredElementRef.current = null;
+    }
+  }, [isInspectMode]);
+
   const handleInspectMouseOver = (e: React.MouseEvent) => {
     if (!isInspectMode) return;
     e.stopPropagation();
@@ -157,14 +181,17 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
     target.style.outline = '2px solid #6366f1';
     target.style.outlineOffset = '2px';
     target.style.cursor = 'crosshair';
+    hoveredElementRef.current = target;
   };
 
   const handleInspectMouseOut = (e: React.MouseEvent) => {
-    if (!isInspectMode) return;
     const target = e.target as HTMLElement;
     target.style.outline = '';
     target.style.outlineOffset = '';
     target.style.cursor = '';
+    if (hoveredElementRef.current === target) {
+      hoveredElementRef.current = null;
+    }
   };
 
   const handleInspectClick = (e: React.MouseEvent, index: number) => {
@@ -193,7 +220,7 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
       }
     }
     
-    setInput(`[Editing: ${desc}] `);
+    setSelectedElementForEdit(desc);
     setTargetScreenIndex(index);
     setIsInspectMode(false);
     
@@ -208,14 +235,21 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
     if (!userMsg.trim() || isGenerating) return;
     
     setInput('');
-    setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+    
+    const isEditMode = selectedElementForEdit !== null || userMsg.startsWith('[Editing:');
+    let promptForAI = userMsg;
+    if (selectedElementForEdit) {
+      promptForAI = `[Editing: ${selectedElementForEdit}] ${userMsg}`;
+    }
+
+    setMessages(prev => [...prev, { role: 'user', content: userMsg, targetElement: selectedElementForEdit }]);
     setIsGenerating(true);
     
     try {
       let indexToEdit = targetScreenIndex !== null ? targetScreenIndex : (screens.length - 1);
       const previousCode = indexToEdit >= 0 ? screens[indexToEdit] : undefined;
       
-      const result = await generateUI(userMsg, previousCode, 0, provider, apiKeys, messages, model);
+      const result = await generateUI(promptForAI, previousCode, 0, provider, apiKeys, messages, model, isEditMode);
       
       setScreens(prev => {
         if (prev.length > 0 && (replaceCurrent || targetScreenIndex !== null)) {
@@ -227,6 +261,7 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
         return [...prev, result.code];
       });
       setTargetScreenIndex(null);
+      setSelectedElementForEdit(null);
       
       let assistantMsg = 'I have generated a new screen based on your request.';
       if (result.plan) {
@@ -290,6 +325,12 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
             messages.map((msg, i) => (
               <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                 <div className={`px-4 py-3 rounded-2xl max-w-[90%] text-sm whitespace-pre-wrap leading-relaxed shadow-sm ${msg.role === 'user' ? 'bg-indigo-500/90 text-white shadow-indigo-500/20 ring-1 ring-white/10' : 'bg-white/5 text-zinc-200 ring-1 ring-white/5 backdrop-blur-md'}`}>
+                  {msg.targetElement && (
+                    <div className="text-xs font-medium bg-black/20 px-2 py-1 rounded mb-2 flex items-center gap-1.5 w-fit">
+                      <LucideIcons.Target className="w-3 h-3" />
+                      {msg.targetElement}
+                    </div>
+                  )}
                   {msg.content}
                 </div>
               </div>
@@ -335,6 +376,23 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
               />
               Update current screen
             </label>
+          )}
+          {selectedElementForEdit && (
+            <div className="flex items-center justify-between bg-indigo-900/40 border border-indigo-500/50 rounded-lg px-3 py-2 mb-2">
+              <span className="text-indigo-200 text-xs font-medium flex items-center gap-2 truncate">
+                <LucideIcons.Target className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">Targeting: {selectedElementForEdit}</span>
+              </span>
+              <button 
+                onClick={() => {
+                  setSelectedElementForEdit(null);
+                  setTargetScreenIndex(null);
+                }} 
+                className="text-indigo-400 hover:text-indigo-300 shrink-0 ml-2"
+              >
+                <LucideIcons.X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           )}
           <div className="relative">
             <textarea
@@ -441,12 +499,14 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
                             className="nodrag pzp-no-pan relative flex flex-col"
                             onMouseOverCapture={handleInspectMouseOver}
                             onMouseOutCapture={handleInspectMouseOut}
-                            onClickCapture={handleInspectClick}
+                            onClickCapture={(e) => handleInspectClick(e, index)}
                           >
-                            <LiveProvider code={code} scope={scope} noInline={true}>
-                              <LivePreview className="flex flex-col" />
-                              <LiveError className="absolute bottom-0 left-0 right-0 p-4 bg-red-900/90 text-red-200 font-mono text-sm overflow-auto max-h-48 z-50" />
-                            </LiveProvider>
+                            <ErrorBoundary>
+                              <LiveProvider code={code} scope={scope} noInline={true}>
+                                <LivePreview className="flex flex-col" />
+                                <LiveError className="absolute bottom-0 left-0 right-0 p-4 bg-red-900/90 text-red-200 font-mono text-sm overflow-auto max-h-48 z-50" />
+                              </LiveProvider>
+                            </ErrorBoundary>
                           </div>
                         </div>
                       ))}
@@ -637,6 +697,10 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
   );
 }
 
+/**
+ * Root Application component.
+ * Manages the project list, global settings, and routing between the dashboard and the editor.
+ */
 export default function App() {
   const [projects, setProjects] = useState<Project[]>(() => {
     const saved = localStorage.getItem('stitch_projects');
