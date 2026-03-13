@@ -1,7 +1,28 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { LiveProvider, LiveError, LivePreview } from 'react-live';
+import { LiveProvider, LivePreview, LiveContext } from 'react-live';
 import * as LucideIcons from 'lucide-react';
 import { TransformWrapper, TransformComponent, useControls, useTransformContext } from 'react-zoom-pan-pinch';
+
+const ErrorFixer = ({ onFix }: { onFix: (error: string) => void }) => {
+  const live = React.useContext(LiveContext);
+  if (!live?.error) return null;
+  
+  return (
+    <div className="absolute bottom-0 left-0 right-0 p-4 bg-red-900/90 text-red-200 font-mono text-sm overflow-auto max-h-48 z-50 flex flex-col gap-3">
+      <div className="whitespace-pre-wrap">{live.error}</div>
+      <button 
+        onClick={(e) => {
+          e.stopPropagation();
+          onFix(live.error!);
+        }}
+        className="self-start px-3 py-1.5 bg-red-800 hover:bg-red-700 text-white text-xs font-medium rounded-md transition-colors flex items-center gap-2 border border-red-600"
+      >
+        <LucideIcons.Wrench className="w-3.5 h-3.5" />
+        Fix this error
+      </button>
+    </div>
+  );
+};
 
 const ZoomControls = () => {
   const { zoomIn, zoomOut, resetTransform, centerView } = useControls();
@@ -306,6 +327,7 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
     
     setSelectedElementForEdit(desc);
     setTargetScreenIndex(index);
+    setReplaceCurrent(true);
     setIsInspectMode(false);
     
     setTimeout(() => {
@@ -336,7 +358,7 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
       const result = await generateUI(promptForAI, previousCode, 0, provider, apiKeys, messages, model, isEditMode);
       
       setScreens(prev => {
-        if (prev.length > 0 && (replaceCurrent || targetScreenIndex !== null)) {
+        if (prev.length > 0 && replaceCurrent) {
           const newScreens = [...prev];
           const target = targetScreenIndex !== null && targetScreenIndex < newScreens.length ? targetScreenIndex : newScreens.length - 1;
           newScreens[target] = result.code;
@@ -363,7 +385,20 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
     }
   };
 
+  const handleFixError = (errorMsg: string, index: number) => {
+    setTargetScreenIndex(index);
+    setReplaceCurrent(true);
+    handleSend(`Fix this error:\n\n${errorMsg}`);
+  };
+
   const handleDeleteScreen = (indexToDelete: number) => {
+    if (targetScreenIndex !== null) {
+      if (targetScreenIndex === indexToDelete) {
+        setTargetScreenIndex(null);
+      } else if (targetScreenIndex > indexToDelete) {
+        setTargetScreenIndex(targetScreenIndex - 1);
+      }
+    }
     setScreens(prev => prev.filter((_, i) => i !== indexToDelete));
   };
 
@@ -451,15 +486,26 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
         
         <div className="p-4 border-t border-white/5 bg-zinc-900/50">
           {screens.length > 0 && (
-            <label className="flex items-center gap-2 text-xs text-zinc-400 mb-2 cursor-pointer w-max">
-              <input 
-                type="checkbox" 
-                checked={replaceCurrent} 
-                onChange={e => setReplaceCurrent(e.target.checked)} 
-                className="rounded border-zinc-700 bg-zinc-800 text-indigo-600 focus:ring-indigo-500" 
-              />
-              Update current screen
-            </label>
+            <div className="flex items-center gap-4 mb-2">
+              <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer w-max">
+                <input 
+                  type="checkbox" 
+                  checked={replaceCurrent} 
+                  onChange={e => setReplaceCurrent(e.target.checked)} 
+                  className="rounded border-zinc-700 bg-zinc-800 text-indigo-600 focus:ring-indigo-500" 
+                />
+                {replaceCurrent ? 'Update screen' : 'Base on screen'}
+              </label>
+              <select
+                value={targetScreenIndex !== null ? targetScreenIndex : screens.length - 1}
+                onChange={e => setTargetScreenIndex(Number(e.target.value))}
+                className="bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              >
+                {screens.map((_, i) => (
+                  <option key={i} value={i}>Screen {i + 1} {i === screens.length - 1 ? '(Latest)' : ''}</option>
+                ))}
+              </select>
+            </div>
           )}
           {selectedElementForEdit && (
             <div className="flex items-center justify-between bg-indigo-900/40 border border-indigo-500/50 rounded-lg px-3 py-2 mb-2">
@@ -598,7 +644,7 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
                             <ErrorBoundary>
                               <LiveProvider code={code} scope={scope} noInline={true}>
                                 <LivePreview className="flex flex-col" />
-                                <LiveError className="absolute bottom-0 left-0 right-0 p-4 bg-red-900/90 text-red-200 font-mono text-sm overflow-auto max-h-48 z-50" />
+                                <ErrorFixer onFix={(err) => handleFixError(err, index)} />
                               </LiveProvider>
                             </ErrorBoundary>
                           </div>
