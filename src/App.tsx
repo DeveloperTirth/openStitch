@@ -1,7 +1,46 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { LiveProvider, LiveError, LivePreview } from 'react-live';
 import * as LucideIcons from 'lucide-react';
-import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
+import { TransformWrapper, TransformComponent, useControls, useTransformContext } from 'react-zoom-pan-pinch';
+
+const ZoomControls = () => {
+  const { zoomIn, zoomOut, resetTransform, centerView } = useControls();
+  const { transformState } = useTransformContext();
+  
+  return (
+    <div className="absolute top-4 right-4 z-10 flex items-center gap-1 bg-zinc-900/80 backdrop-blur-md p-1 rounded-lg border border-zinc-800 shadow-xl">
+      <button 
+        onClick={() => zoomOut()} 
+        className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-md transition-colors"
+        title="Zoom Out"
+      >
+        <LucideIcons.Minus className="w-4 h-4" />
+      </button>
+      <button 
+        onClick={() => resetTransform()} 
+        className="px-2 py-1.5 text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-md transition-colors min-w-[3rem]"
+        title="Reset Zoom"
+      >
+        {Math.round(transformState.scale * 100)}%
+      </button>
+      <button 
+        onClick={() => zoomIn()} 
+        className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-md transition-colors"
+        title="Zoom In"
+      >
+        <LucideIcons.Plus className="w-4 h-4" />
+      </button>
+      <div className="w-px h-4 bg-zinc-700 mx-1" />
+      <button 
+        onClick={() => centerView()} 
+        className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 rounded-md transition-colors"
+        title="Fit to Screen"
+      >
+        <LucideIcons.Maximize className="w-4 h-4" />
+      </button>
+    </div>
+  );
+};
 import { generateUI, AIProvider, APIKeys } from './services/gemini';
 import { View, Text, Image, ScrollView, TouchableOpacity, StyleSheet, TextInput, FlatList, SafeAreaView } from 'react-native';
 import tw from 'twrnc';
@@ -103,6 +142,51 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
   const [toastError, setToastError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [isSpacePressed, setIsSpacePressed] = useState(false);
+  const [isMiddleMousePressed, setIsMiddleMousePressed] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        setIsSpacePressed(true);
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setIsSpacePressed(false);
+      }
+    };
+    const handleMouseDown = (e: MouseEvent) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        setIsMiddleMousePressed(true);
+      }
+    };
+    const handleMouseUp = (e: MouseEvent) => {
+      if (e.button === 1) {
+        setIsMiddleMousePressed(false);
+      }
+    };
+    const handleBlur = () => {
+      setIsSpacePressed(false);
+      setIsMiddleMousePressed(false);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, []);
 
   useEffect(() => {
     if (toastError) {
@@ -454,7 +538,7 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
               <LucideIcons.MousePointer2 className="w-3 h-3" />
               {isInspectMode 
                 ? 'Click any element on the screen to edit it.' 
-                : 'Drag canvas to pan, Ctrl+Scroll to zoom. Interact with app normally.'}
+                : 'Drag canvas or hold Space/Middle Click to pan, Ctrl+Scroll to zoom.'}
             </div>
           )}
         </div>
@@ -463,22 +547,32 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
           {screens.length > 0 ? (
             activeTab === 'preview' ? (
               <div 
-                className="w-full h-full overflow-hidden relative"
+                ref={gridRef}
+                className={`w-full h-full overflow-hidden relative ${isSpacePressed || isMiddleMousePressed ? 'cursor-grab active:cursor-grabbing' : ''}`}
                 style={{
-                  backgroundImage: 'radial-gradient(#333 1px, transparent 0)',
+                  backgroundImage: 'radial-gradient(#444 1px, transparent 0)',
                   backgroundSize: '24px 24px',
-                  backgroundColor: '#1e1e1e'
+                  backgroundColor: '#1e1e1e',
+                  backgroundPosition: '0px 0px'
                 }}
               >
                 <TransformWrapper
                   initialScale={0.8}
-                  minScale={0.1}
+                  minScale={0.05}
                   maxScale={4}
                   centerOnInit={true}
-                  wheel={{ step: 0.1, activationKeys: ['Control', 'Meta'] }}
+                  wheel={{ step: 0.1, smoothStep: 0.005, activationKeys: ['Control', 'Meta'] }}
                   panning={{ wheelPanning: true, velocityDisabled: false, excluded: ['nodrag', 'pzp-no-pan'] }}
                   doubleClick={{ disabled: true }}
+                  onTransformed={(ref, state) => {
+                    if (gridRef.current) {
+                      const { scale, positionX, positionY } = state;
+                      gridRef.current.style.backgroundSize = `${24 * scale}px ${24 * scale}px`;
+                      gridRef.current.style.backgroundPosition = `${positionX}px ${positionY}px`;
+                    }
+                  }}
                 >
+                  <ZoomControls />
                   <TransformComponent wrapperStyle={{ width: '100%', height: '100%' }}>
                     <div className="flex items-center gap-16 p-32 min-w-max min-h-max">
                       {screens.map((code, index) => (
@@ -496,7 +590,7 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
                             </button>
                           </div>
                           <div 
-                            className="nodrag pzp-no-pan relative flex flex-col"
+                            className={`${isSpacePressed || isMiddleMousePressed ? '' : 'nodrag pzp-no-pan'} relative flex flex-col`}
                             onMouseOverCapture={handleInspectMouseOver}
                             onMouseOutCapture={handleInspectMouseOut}
                             onClickCapture={(e) => handleInspectClick(e, index)}
