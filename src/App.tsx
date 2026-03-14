@@ -161,6 +161,7 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
   const [targetScreenIndex, setTargetScreenIndex] = useState<number | null>(null);
   const [replaceCurrent, setReplaceCurrent] = useState(true);
   const [toastError, setToastError] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -215,6 +216,13 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
       return () => clearTimeout(timer);
     }
   }, [toastError]);
+
+  useEffect(() => {
+    if (toastMessage) {
+      const timer = setTimeout(() => setToastMessage(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMessage]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -402,11 +410,99 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
     setScreens(prev => prev.filter((_, i) => i !== indexToDelete));
   };
 
+  const formatCodeForExpo = (code: string) => {
+    let formattedCode = code;
+    
+    // 1. Find the main component name from render(<Component />)
+    const renderMatch = formattedCode.match(/render\(\s*<([A-Za-z0-9_]+)\s*\/?>(?:\s*<\/[A-Za-z0-9_]+>)?\s*\);?/);
+    const mainComponent = renderMatch ? renderMatch[1] : 'App';
+    
+    // Remove the render() call
+    formattedCode = formattedCode.replace(/render\(\s*<[A-Za-z0-9_]+\s*\/?>(?:\s*<\/[A-Za-z0-9_]+>)?\s*\);?/, '');
+    
+    // Replace lucide-react with lucide-react-native if it was imported
+    formattedCode = formattedCode.replace(/from\s+['"]lucide-react['"]/g, "from 'lucide-react-native'");
+    
+    // 2. Extract used React Native components
+    const rnComponents = [
+      'View', 'Text', 'Image', 'ScrollView', 'TouchableOpacity', 'TextInput', 
+      'FlatList', 'SafeAreaView', 'StyleSheet', 'Platform', 'Dimensions', 
+      'Animated', 'Easing', 'KeyboardAvoidingView', 'Modal', 'Switch', 
+      'ActivityIndicator', 'RefreshControl', 'SectionList', 'StatusBar', 
+      'TouchableHighlight', 'TouchableWithoutFeedback', 'ImageBackground'
+    ];
+    
+    const usedRnComponents = rnComponents.filter(comp => new RegExp(`\\b${comp}\\b`).test(formattedCode));
+    
+    // 3. Extract used Lucide icons
+    const jsxTagMatches = [...formattedCode.matchAll(/<([A-Z][a-zA-Z0-9_]*)/g)];
+    const usedTags = [...new Set(jsxTagMatches.map(m => m[1]))];
+    
+    const definedComponents = [...formattedCode.matchAll(/(?:const|function|class)\s+([A-Z][a-zA-Z0-9_]*)/g)].map(m => m[1]);
+    const possibleIcons = usedTags.filter(tag => !rnComponents.includes(tag) && !definedComponents.includes(tag));
+    
+    // 4. Extract used React hooks
+    const reactHooks = ['useState', 'useEffect', 'useRef', 'useMemo', 'useCallback', 'useReducer', 'useContext', 'useLayoutEffect'];
+    const usedHooks = reactHooks.filter(hook => new RegExp(`\\b${hook}\\b`).test(formattedCode));
+    
+    // 5. Build imports
+    let imports = '';
+    if (!formattedCode.includes('import React')) {
+      imports += `import React`;
+      if (usedHooks.length > 0) {
+        imports += `, { ${usedHooks.join(', ')} }`;
+      }
+      imports += ` from 'react';\n`;
+    }
+    
+    if (usedRnComponents.length > 0 && !formattedCode.includes('react-native')) {
+      imports += `import { ${usedRnComponents.join(', ')} } from 'react-native';\n`;
+    }
+    
+    if (formattedCode.includes('tw`') && !formattedCode.includes('twrnc')) {
+      imports += `import tw from 'twrnc';\n`;
+    }
+    
+    if (possibleIcons.length > 0 && !formattedCode.includes('lucide-react-native')) {
+      imports += `import { ${possibleIcons.join(', ')} } from 'lucide-react-native';\n`;
+    }
+    
+    // 6. Strip the phone frame wrapper
+    formattedCode = formattedCode.replace(/<View\s+style=\{\{\s*width:\s*375,\s*height:\s*812,\s*overflow:\s*['"]hidden['"],\s*backgroundColor:\s*['"]white['"],\s*borderRadius:\s*40,\s*borderWidth:\s*8,\s*borderColor:\s*['"]#18181b['"]\s*\}\}>/g, '<View style={tw`flex-1 bg-white`}>');
+    
+    // 7. Add export default
+    if (!formattedCode.includes('export default')) {
+      formattedCode = `${imports}\n${formattedCode.trim()}\n\nexport default ${mainComponent};\n`;
+    } else {
+      formattedCode = `${imports}\n${formattedCode.trim()}\n`;
+    }
+    
+    return formattedCode;
+  };
+
   const handleExport = async () => {
     const zip = new JSZip();
     screens.forEach((code, i) => {
-      zip.file(`Screen${i + 1}.tsx`, code);
+      zip.file(`Screen${i + 1}.tsx`, formatCodeForExpo(code));
     });
+    
+    // Add a helpful README
+    zip.file('README.md', `# Expo Export
+
+These screens are ready to be used in your Expo project!
+
+## Setup Instructions
+
+1. Install the required dependencies in your Expo project:
+\`\`\`bash
+npx expo install twrnc lucide-react-native
+\`\`\`
+
+2. Copy the \`Screen*.tsx\` files into your project's components or screens directory.
+
+3. Import and use them in your app!
+`);
+
     const content = await zip.generateAsync({ type: 'blob' });
     saveAs(content, 'stitch-screens.zip');
   };
@@ -627,13 +723,25 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
                             <span className="text-zinc-500 font-mono text-sm font-medium">
                               Screen {index + 1} {index === screens.length - 1 && '(Latest)'}
                             </span>
-                            <button 
-                              onClick={() => handleDeleteScreen(index)} 
-                              className="text-zinc-500 hover:text-red-400 transition-colors" 
-                              title="Delete Screen"
-                            >
-                              <LucideIcons.Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="flex items-center gap-1 ml-2">
+                              <button 
+                                onClick={() => {
+                                  navigator.clipboard.writeText(formatCodeForExpo(code));
+                                  setToastMessage('Expo code copied to clipboard!');
+                                }} 
+                                className="text-zinc-500 hover:text-indigo-400 transition-colors p-1" 
+                                title="Copy Expo Code"
+                              >
+                                <LucideIcons.Copy className="w-3.5 h-3.5" />
+                              </button>
+                              <button 
+                                onClick={() => handleDeleteScreen(index)} 
+                                className="text-zinc-500 hover:text-red-400 transition-colors p-1" 
+                                title="Delete Screen"
+                              >
+                                <LucideIcons.Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
                           <div 
                             className={`${isSpacePressed || isMiddleMousePressed ? '' : 'nodrag pzp-no-pan'} relative flex flex-col`}
@@ -680,11 +788,26 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
                       </span>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => navigator.clipboard.writeText(code)}
-                          className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 rounded-md transition-colors"
-                          title="Copy Code"
+                          onClick={() => {
+                            navigator.clipboard.writeText(formatCodeForExpo(code));
+                            setToastMessage('Expo code copied to clipboard!');
+                          }}
+                          className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-indigo-400 rounded-md transition-colors flex items-center gap-1"
+                          title="Copy Expo Code"
                         >
                           <LucideIcons.Copy className="w-4 h-4" />
+                          <span className="text-xs font-medium">Expo</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(code);
+                            setToastMessage('Raw code copied to clipboard!');
+                          }}
+                          className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 rounded-md transition-colors flex items-center gap-1"
+                          title="Copy Raw Code"
+                        >
+                          <LucideIcons.Copy className="w-4 h-4" />
+                          <span className="text-xs font-medium">Raw</span>
                         </button>
                         <button
                           onClick={() => handleDeleteScreen(index)}
@@ -829,6 +952,16 @@ function Editor({ projectId, onBack, initialPrompt }: { projectId: string, onBac
           <LucideIcons.AlertCircle className="w-5 h-5 flex-shrink-0" />
           <p className="text-sm">{toastError}</p>
           <button onClick={() => setToastError(null)} className="p-1 hover:bg-red-600 rounded-md transition-colors ml-auto">
+            <LucideIcons.X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+      
+      {toastMessage && (
+        <div className="fixed bottom-4 right-4 bg-emerald-600 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 z-50 max-w-md animate-in slide-in-from-bottom-5">
+          <LucideIcons.CheckCircle2 className="w-5 h-5 flex-shrink-0" />
+          <p className="text-sm">{toastMessage}</p>
+          <button onClick={() => setToastMessage(null)} className="p-1 hover:bg-emerald-700 rounded-md transition-colors ml-auto">
             <LucideIcons.X className="w-4 h-4" />
           </button>
         </div>
